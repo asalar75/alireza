@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8.0
+pypdf>=5.0          # report tests read generated PDFs
+pdfplumber>=0.11    # report tests check text positions / tables

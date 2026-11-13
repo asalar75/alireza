@@ -1,0 +1,4 @@
+# Runtime dependencies. NOT YET PINNED/LOCKED - see docs/TEST_REPORT_0_3.md (item F).
+PySide6>=6.7
+httpx>=0.27
+reportlab>=4.2
