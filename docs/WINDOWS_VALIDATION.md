@@ -40,8 +40,18 @@ The script creates `.venv-validate-<RunId>` inside the project folder (a new one
 * If `.venv-validate-<RunId>` **already exists**, it stops the same way. An existing venv is never
   reused, cleaned or deleted.
 * The two folders are created with `New-Item` without the Force switch, so a folder that appears in the
-  meantime is also a refusal. No file is ever deleted, truncated, replaced or renamed; every log and the
-  report are created once. The only file rewritten is this run's own `results.json` (progress file).
+  meantime is also a refusal. No file is ever deleted, replaced or renamed.
+* R7.1: every output file is created with genuinely exclusive creation (`FileMode.CreateNew`, one atomic
+  operation, no `Test-Path` pre-check to race against). `results.json` is created once and its handle is held
+  (FileShare.Read) for the whole run: only this run updates it, only through that handle, and the handle is
+  closed before the report is rendered. The three log files of each command (`<name>.stdout.txt`,
+  `.stderr.txt`, `.log`) are created exclusively *before* the command runs; output is captured in memory
+  (no cmdlet-level redirection) and written through those handles. If a log name already exists the command
+  is not run. The pytest JUnit file gets a unique GUID name. `checks.json` and `REPORT.md` are created
+  exclusively by the Python helper.
+* Remaining limits: a file reserved before a failure stays (empty) because nothing is ever deleted; files
+  written by child processes themselves (pytest's JUnit XML) are protected by a unique name inside a folder this
+  run created, not by file-level exclusive creation.
 * Consequence: running twice in the same second without `-RunId`/`-OutDir` is refused. Give each run a new
   `-RunId`, or remove the old folders yourself.
 Exit codes: 0 = every automated step PASS; 1 = at least one step not PASS; 2 = refused (output path

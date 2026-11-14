@@ -3,7 +3,7 @@
 > فقط Claude این فایل را به‌روز می‌کند. ChatGPT فقط می‌خواند و پیشنهاد را در `NEXT.md` می‌نویسد.
 
 ## آخرین به‌روزرسانی
-2026-11-14 — شاخه `aegissec-v0.3-m2-r7` (ساخته‌شده از `aegissec-v0.3-m2-r6`، commit `bcfc133001ce4563aed76d6fd4c6772def9f1854`). `main` و `master` دست نخورده.
+2026-11-14 — شاخه `aegissec-v0.3-m2-r7-1` (ساخته‌شده از `aegissec-v0.3-m2-r7`، commit `98c6d04d9a44c6a6b2c6b755ff9d2c77ee9b8a0d`). R6 و R7 و `main` و `master` دست نخورده.
 
 ## پروژه
 AegisSec Enterprise v0.3 (milestone 2 در حال انجام): ابزار دسکتاپ دوزبانهٔ ویندوزی برای ارزیابی امنیتی مجاز. جزئیات: `README.md`، `docs/TEST_REPORT_0_3_M2.md`.
@@ -36,15 +36,26 @@ AegisSec Enterprise v0.3 (milestone 2 در حال انجام): ابزار دسک
 - کل مجموعه: 252 passed، 0 failed، 3 skipped (فقط سه تست runtime پاورشل). compileall موفق.
 - تست‌های ایستا (متن اسکریپت)، تست‌های اجراشدهٔ پایتون و تست‌های runtime پاورشل جدا گزارش شده‌اند؛ runtime پاورشل **اجرا نشده**.
 
+## R7.1 — انجام‌شده
+- ایراد: الگوی `Test-Path` سپس `WriteAllText` (و redirect خودِ `Start-Process`) یک race بین بررسی و نوشتن داشت.
+- `tools/validate_windows.ps1`: همهٔ فایل‌های خروجی با `FileMode.CreateNew` ساخته می‌شوند (اتمی، بدون پیش‌بررسی). `results.json` یک‌بار و انحصاری ساخته می‌شود و handle آن تا پایان اجرا در اختیار همین اجراست (FileShare.Read)؛ فقط از همان handle به‌روز می‌شود و پیش از ساخت گزارش بسته می‌شود. لاگ‌های هر دستور (`.stdout.txt`، `.stderr.txt`، `.log`) پیش از اجرای دستور انحصاری رزرو می‌شوند؛ خروجی پروسه در حافظه گرفته می‌شود (بدون redirect) و از همان handleها نوشته می‌شود. `Start-Process`، `WriteAllText`، حذف/تغییرنام/جایگزینی وجود ندارد. فایل JUnit نام یکتا (GUID) دارد.
+- `tools/windows_validation.py`: `write_new` ابتدا محتوا را encode می‌کند، سپس با `"xb"` می‌سازد (بدون پیش‌بررسی، handle همیشه بسته می‌شود).
+- تست جدید: `tests/test_windows_validation_exclusive_io.py` (۶ ایستا + ۸ اجراشدهٔ پایتون + ۶ runtime پاورشل؛ جزئیات در `docs/TEST_REPORT_0_3_M2_R7_1.md`، ۶ تست runtime پاورشل اینجا SKIP می‌شوند).
+
+## R7.1 — نتیجهٔ آزمایش (Linux، Python 3.13.18)
+- کل مجموعه: 275 تست، 266 passed، 0 failed، 9 skipped (همگی runtime پاورشل: ۶ جدید + ۳ از R7). compileall موفق.
+- **PowerShell و Windows اجرا نشده‌اند**؛ رفتار PowerShell فقط با بررسی ایستا متن و تست‌های پایتون پوشش داده شده است.
+
 ## انجام‌نشده / تأییدنشده
 - اعتبارسنجی واقعی روی Windows 10/11 x64 هنوز انجام نشده؛ همهٔ آزمایش‌ها روی Linux بوده‌اند.
 - PDF فارسی، قفل وابستگی‌ها و pip-audit همچنان انجام نشده (طبق README).
-- R5، R6 و R7 هنوز Merge نشده‌اند.
+- R5، R6، R7 و R7.1 هنوز Merge نشده‌اند.
 - اسکریپت PowerShell هرگز اجرا نشده است (نه روی Windows و نه با pwsh).
 
 ## در انتظار
 - بررسی ChatGPT و تأیید کاربر برای ادامه (مرحلهٔ بعد در `NEXT.md`).
 
 ## تاریخچه
+- 2026-11-14: R7.1 — ایجاد انحصاری فایل‌های خروجی در PowerShell (حذف race بین بررسی و نوشتن).
 - 2026-11-14: R7 — ایمن‌سازی مسیر خروجی اعتبارسنجی ویندوز (OutDir/venv موجود → توقف fail-closed).
 - 2026-11-14: R6 — fail-closed دقیق برای mode؛ ساخت `STATUS.md` و `NEXT.md`.

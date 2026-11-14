@@ -50,11 +50,11 @@ def test_static_preflight_runs_before_anything_is_written():
     venv_check = _pos("if (Test-Path -LiteralPath $venvDir)")
     create_out = _pos("New-Item -ItemType Directory -Path $OutDir")
     main_try = _pos("try {\n    Write-Host \"AegisSec Enterprise")
-    first_write = min(_pos("Write-Text (Join-Path $OutDir 'results.json')"), _pos("function Invoke-Logged"))
+    first_write = _pos("$script:ResultsStream = Open-NewFileStream")
     assert refuse < outdir_check < venv_check < create_out < main_try
     assert venv_check < first_write and "exit 2" in PS1[refuse:outdir_check]
     # nothing but reads (Set-Location, Test-Path) happens before the OutDir check
-    assert "Out-File" not in PS1[:outdir_check] and "WriteAllText" not in PS1[:outdir_check].split("function Write-Text")[0]
+    assert "Out-File" not in PS1[:outdir_check] and "WriteAllText" not in PS1
 
 
 def test_static_new_item_never_uses_force_and_fails_closed():
@@ -75,13 +75,10 @@ def test_static_no_delete_truncate_replace_rename_or_venv_reuse_commands():
     assert "@('-m', 'venv', $venvDir)" in PS1
 
 
-def test_static_every_file_write_refuses_existing_files():
-    w = PS1[_pos("function Write-Text"):_pos("function Save-Results")]
-    assert "Refusing to overwrite existing file" in w and "-not $AllowRewrite" in w
-    # only results.json (this run's own progress file) may be rewritten
-    uses = [l for l in PS1.splitlines() if "-AllowRewrite" in l and not l.lstrip().startswith("#")]
-    assert len(uses) == 1 and "'results.json') $json -AllowRewrite" in PS1
-    assert "Refusing to overwrite existing file" in PS1[_pos("function Invoke-Logged"):_pos("function Get-Tail")]
+def test_static_file_writes_use_exclusive_creation_only():
+    """R7.1 superseded the R7 Test-Path/Write-Text guard; details in test_windows_validation_exclusive_io.py."""
+    assert "function Write-Text" not in PS1 and "AllowRewrite" not in PS1
+    assert "[System.IO.FileMode]::CreateNew" in PS1
 
 
 def test_static_runid_is_validated_and_documented():

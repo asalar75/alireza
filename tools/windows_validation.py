@@ -411,10 +411,13 @@ def build_report(results: dict) -> str:
 
 # --------------------------------------------------------------------------- safe output
 def write_new(path: Path, text: str) -> None:
-    """Create ``path`` exclusively. An existing file is never truncated or replaced
-    (FileExistsError); there is no overwrite fallback."""
-    with open(path, "x", encoding="utf-8") as fh:
-        fh.write(text)
+    """Create ``path`` exclusively and write ``text``. An existing file is never truncated or replaced
+    (FileExistsError); there is no pre-check to race against and no overwrite fallback.
+    The content is encoded BEFORE the file is created, so an encoding error creates nothing, and the
+    handle is always closed."""
+    data = text.encode("utf-8")
+    with open(path, "xb") as fh:
+        fh.write(data)
 
 
 def _refuse_existing(path: Path) -> int:

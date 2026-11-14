@@ -51,6 +51,29 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $RepoRoot
 
+# BEGIN EXCLUSIVE-IO
+# Exclusive file creation. FileMode.CreateNew is a single atomic operation that fails if the name
+# already exists, so there is NO existence pre-check to race against and no overwrite fallback.
+# The returned stream is owned by this run: it is opened for writing with FileShare.Read, so other
+# processes cannot write to, truncate or delete the file while this run holds it.
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+function Open-NewFileStream([string]$Path, [System.IO.FileShare]$Share = [System.IO.FileShare]::Read) {
+    $fs = New-Object System.IO.FileStream -ArgumentList $Path, ([System.IO.FileMode]::CreateNew), ([System.IO.FileAccess]::Write), $Share
+    return , $fs
+}
+
+# Writes the full content through a stream this run created and still owns. The bytes are produced
+# first; the file is shortened (to the new length) only after the new content was written.
+function Set-OwnedContent([System.IO.FileStream]$Stream, [string]$Text) {
+    $bytes = $Utf8NoBom.GetBytes($Text)
+    [void]$Stream.Seek(0, [System.IO.SeekOrigin]::Begin)
+    $Stream.Write($bytes, 0, $bytes.Length)
+    $Stream.SetLength($bytes.Length)
+    $Stream.Flush($true)
+}
+# END EXCLUSIVE-IO
+
 $Stamp = $RunId
 if (-not $Stamp) { $Stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ') }
 
@@ -69,6 +92,11 @@ if (Test-Path -LiteralPath $venvDir) { Stop-Refused "virtual environment folder 
 try { [void](New-Item -ItemType Directory -Path $OutDir -ErrorAction Stop) }
 catch { Stop-Refused ("cannot create a NEW OutDir '" + $OutDir + "': " + $_.Exception.Message) }
 $OutDir = (Resolve-Path -LiteralPath $OutDir).Path
+# results.json is created exclusively and held open for the whole run (ownership). Only this run can
+# update it, and only through this handle.
+$script:ResultsStream = $null
+try { $script:ResultsStream = Open-NewFileStream (Join-Path $OutDir 'results.json') }
+catch { Stop-Refused ("cannot exclusively create results.json in '" + $OutDir + "': " + $_.Exception.Message) }
 
 $script:Steps = New-Object System.Collections.ArrayList
 $script:Commands = New-Object System.Collections.ArrayList
@@ -76,17 +104,8 @@ $script:Meta = [ordered]@{}
 $script:Pytest = $null
 $script:SysPy = $null
 $script:VenvPy = $null
-$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-
 $env:PYTHONUTF8 = '1'
 $env:PIP_DISABLE_PIP_VERSION_CHECK = '1'
-
-# Every file is created once inside the fresh OutDir. An existing file is never overwritten,
-# except results.json, which this same run rewrites as it progresses (-AllowRewrite).
-function Write-Text([string]$Path, [string]$Text, [switch]$AllowRewrite) {
-    if ((Test-Path -LiteralPath $Path) -and -not $AllowRewrite) { throw "Refusing to overwrite existing file: $Path" }
-    [System.IO.File]::WriteAllText($Path, $Text, $Utf8NoBom)
-}
 
 function Save-Results {
     $obj = [ordered]@{
@@ -96,7 +115,8 @@ function Save-Results {
         pytest   = $script:Pytest
     }
     $json = ConvertTo-Json -InputObject $obj -Depth 8
-    Write-Text (Join-Path $OutDir 'results.json') $json -AllowRewrite
+    if ($null -eq $script:ResultsStream) { throw 'results.json is not owned by this run (stream closed)' }
+    Set-OwnedContent $script:ResultsStream $json
 }
 
 function Add-Step([string]$Id, [string]$Title, [string]$Status, [string]$Detail, $ExitCode = $null, [string]$Command = '') {
@@ -121,34 +141,55 @@ function Format-Arg([string]$a) {
     return $a
 }
 
-# Runs an executable, captures stdout/stderr into <LogName>.log, records the command and exit code.
+# Runs an executable, captures stdout/stderr in memory and publishes <LogName>.stdout.txt, .stderr.txt and .log.
+# The three log files are created EXCLUSIVELY (CreateNew) before the command runs and written through
+# those owned handles. No cmdlet-level output redirection is used (it would open/truncate the target by itself),
+# and no Test-Path check protects the files.
 function Invoke-Logged([string]$Exe, [string[]]$ArgList, [string]$LogName) {
-    $out = Join-Path $OutDir ($LogName + '.stdout.txt')
-    $err = Join-Path $OutDir ($LogName + '.stderr.txt')
-    foreach ($f in @($out, $err, (Join-Path $OutDir ($LogName + '.log')))) {
-        if (Test-Path -LiteralPath $f) { throw "Refusing to overwrite existing file: $f" }
-    }
     $display = (@($Exe) + $ArgList | ForEach-Object { Format-Arg $_ }) -join ' '
-    Write-Host ("> " + $display) -ForegroundColor DarkGray
-    $sp = @{
-        FilePath               = $Exe
-        WorkingDirectory       = $RepoRoot
-        NoNewWindow            = $true
-        Wait                   = $true
-        PassThru               = $true
-        RedirectStandardOutput = $out
-        RedirectStandardError  = $err
+    $streams = New-Object System.Collections.ArrayList
+    $proc = $null
+    $stdout = ''
+    $stderr = ''
+    $code = -1
+    try {
+        foreach ($suffix in @('.stdout.txt', '.stderr.txt', '.log')) {
+            [void]$streams.Add((Open-NewFileStream (Join-Path $OutDir ($LogName + $suffix))))
+        }
+        Write-Host ("> " + $display) -ForegroundColor DarkGray
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $Exe
+        $psi.Arguments = (($ArgList | ForEach-Object { Format-Arg $_ }) -join ' ')
+        $psi.WorkingDirectory = $RepoRoot
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.StandardOutputEncoding = $Utf8NoBom
+        $psi.StandardErrorEncoding = $Utf8NoBom
+        try {
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            $proc.WaitForExit()
+            $stdout = $outTask.Result
+            $stderr = $errTask.Result
+            $code = $proc.ExitCode
+        } catch {
+            $stderr = 'failed to run the command: ' + $_.Exception.Message
+            $code = -1
+        }
+        Set-OwnedContent $streams[0] $stdout
+        Set-OwnedContent $streams[1] $stderr
+        Set-OwnedContent $streams[2] ($stdout + $stderr)
     }
-    if ($ArgList -and $ArgList.Count -gt 0) { $sp['ArgumentList'] = (($ArgList | ForEach-Object { Format-Arg $_ }) -join ' ') }
-    $p = Start-Process @sp
-    $code = $p.ExitCode
-    $text = ''
-    if (Test-Path -LiteralPath $out) { $text += [System.IO.File]::ReadAllText($out) }
-    if (Test-Path -LiteralPath $err) { $text += [System.IO.File]::ReadAllText($err) }
-    Write-Text (Join-Path $OutDir ($LogName + '.log')) $text
+    finally {
+        if ($null -ne $proc) { $proc.Dispose() }
+        foreach ($st in $streams) { $st.Dispose() }
+    }
     [void]$script:Commands.Add([ordered]@{ command = $display; exit_code = $code; log = ($LogName + '.log') })
     Save-Results
-    return [pscustomobject]@{ ExitCode = $code; Text = $text; Stdout = $(if (Test-Path -LiteralPath $out) { [System.IO.File]::ReadAllText($out) } else { '' }) }
+    return [pscustomobject]@{ ExitCode = $code; Text = ($stdout + $stderr); Stdout = $stdout }
 }
 
 function Get-Tail([string]$Text, [int]$Lines = 12) {
@@ -283,7 +324,7 @@ try {
     Add-Step 'imports' $Titles.imports 'PASS' (($r.Stdout).Trim()) $r.ExitCode
 
     # ---- 6. pytest ------------------------------------------------------------------------
-    $junit = Join-Path $OutDir 'pytest-junit.xml'
+    $junit = Join-Path $OutDir ('pytest-junit-' + [guid]::NewGuid().ToString('N') + '.xml')
     $r = Invoke-Logged $script:VenvPy @('-m', 'pytest', '-q', '-p', 'no:cacheprovider', '--junitxml', $junit) 'pytest'
     $ptDetail = ''
     $ptStatus = 'FAIL'
@@ -337,6 +378,8 @@ catch {
 finally {
     $script:Meta['finished_utc'] = (Get-Date).ToUniversalTime().ToString('o')
     Save-Results
+    # End of ownership: close the handle so the report helper can read results.json.
+    if ($null -ne $script:ResultsStream) { $script:ResultsStream.Dispose(); $script:ResultsStream = $null }
     $py = $script:SysPy
     if (-not $py -and (Get-Command py -ErrorAction SilentlyContinue)) { $py = 'py' }
     if (-not $py -and (Get-Command python -ErrorAction SilentlyContinue)) { $py = 'python' }
