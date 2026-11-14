@@ -335,11 +335,13 @@ def build_report(results: dict) -> str:
     for sid, s in by_id.items():  # unknown extra steps
         if sid not in STEP_TITLES:
             steps.append(s)
-    # Fail closed: only a literal JSON true counts. A missing/null/"true"/1 value, or a mode that
-    # says dry run / not Windows / unconfirmed, can never produce a Windows verdict.
-    mode = str(meta.get("mode", ""))
+    # Fail closed (R6): a Windows verdict needs BOTH a literal JSON true for is_windows AND the exact
+    # string "WINDOWS" as mode. A missing/null/"true"/1 value, or any other mode (known-bad like
+    # "DRY-RUN", or unknown like "WINDOWS-UNVERIFIED" / "windows" / " WINDOWS"), is never accepted.
+    raw_mode = meta.get("mode", "")
+    mode = str(raw_mode)
     recorded = meta.get("is_windows")
-    is_win = (recorded is True) and not mode.upper().startswith(("DRY-RUN", "NOT WINDOWS", "UNCONFIRMED"))
+    is_win = (recorded is True) and (isinstance(raw_mode, str) and raw_mode == "WINDOWS")
     counts = {k: sum(1 for s in steps if s["status"] == k) for k in STATUSES}
     auto_pass = is_win and counts["PASS"] == len(steps)
     L = []

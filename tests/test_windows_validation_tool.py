@@ -189,6 +189,27 @@ def test_inconsistent_mode_overrides_is_windows_true(mode):
     assert "inconsistent with a Windows run" in md
 
 
+# ---- R6: exact mode match (fail closed on unknown modes) ------------------------------------
+@pytest.mark.parametrize("mode", ["WINDOWS-UNVERIFIED", "windows", "Windows", " WINDOWS", "WINDOWS ", "WINDOWS\n",
+                                  "WINDOWS (unverified)", "NOT-WINDOWS", "WIN", "", "unknown",
+                                  None, 1, True, ["WINDOWS"], {"mode": "WINDOWS"}])
+def test_only_exact_windows_mode_is_accepted(mode):
+    md = wv.build_report(_meta_results({"is_windows": True, "mode": mode}))
+    assert "Automated Windows validation: **PASS**" not in md
+    assert "NOT A WINDOWS VALIDATION" in md and "inconsistent with a Windows run" in md
+
+
+def test_missing_mode_is_not_accepted():
+    md = wv.build_report(_meta_results({"is_windows": True}))
+    assert "Automated Windows validation: **PASS**" not in md and "NOT A WINDOWS VALIDATION" in md
+
+
+@pytest.mark.parametrize("flag", [False, None, "true", 1])
+def test_exact_windows_mode_alone_is_not_enough(flag):
+    md = wv.build_report(_meta_results({"is_windows": flag, "mode": "WINDOWS"}))
+    assert "Automated Windows validation: **PASS**" not in md and "NOT A WINDOWS VALIDATION" in md
+
+
 def test_blocked_windows_run_is_not_a_pass_even_with_is_windows_true():
     res = _meta_results({"is_windows": True, "mode": "WINDOWS"})
     res["steps"][3]["status"] = "BLOCKED"
