@@ -3,7 +3,7 @@
 > فقط Claude این فایل را به‌روز می‌کند. ChatGPT فقط می‌خواند و پیشنهاد را در `NEXT.md` می‌نویسد.
 
 ## آخرین به‌روزرسانی
-2026-11-14 — شاخه `aegissec-v0.3-m2-r6` (ساخته‌شده از `aegissec-v0.3-m2-r5`). `main` دست نخورده.
+2026-11-14 — شاخه `aegissec-v0.3-m2-r7` (ساخته‌شده از `aegissec-v0.3-m2-r6`، commit `bcfc133001ce4563aed76d6fd4c6772def9f1854`). `main` و `master` دست نخورده.
 
 ## پروژه
 AegisSec Enterprise v0.3 (milestone 2 در حال انجام): ابزار دسکتاپ دوزبانهٔ ویندوزی برای ارزیابی امنیتی مجاز. جزئیات: `README.md`، `docs/TEST_REPORT_0_3_M2.md`.
@@ -26,13 +26,25 @@ AegisSec Enterprise v0.3 (milestone 2 در حال انجام): ابزار دسک
 - تست‌های جدید روی کد R5 شکست می‌خورند (17 مورد) و روی کد R6 می‌گذرند.
 - کل مجموعه تست: 243 passed.
 
+## R7 — انجام‌شده
+- `tools/validate_windows.ps1`: اگر `-OutDir` از قبل وجود داشته باشد یا `.venv-validate-<RunId>` وجود داشته باشد، اجرا پیش از هر نوشتن با exit code 2 متوقف می‌شود. پوشه‌ها با `New-Item` بدون `-Force` ساخته می‌شوند؛ venv موجود reuse یا حذف نمی‌شود. پارامتر جدید `-RunId`.
+- هر لاگ/گزارش فقط یک‌بار ساخته می‌شود؛ تنها `results.json` همین اجرا بازنویسی می‌شود.
+- `tools/windows_validation.py`: `checks.json` و `REPORT.md` با حالت exclusive-create (`"x"`) نوشته می‌شوند؛ فایل موجود هرگز بازنویسی نمی‌شود.
+- تست جدید: `tests/test_windows_validation_outputs.py` (۹ تست اجراشده + ۳ تست runtime پاورشل که در این محیط SKIP می‌شوند چون PowerShell نصب نیست).
+
+## R7 — نتیجهٔ آزمایش (Linux، Python 3.13.18)
+- کل مجموعه: 252 passed، 0 failed، 3 skipped (فقط سه تست runtime پاورشل). compileall موفق.
+- تست‌های ایستا (متن اسکریپت)، تست‌های اجراشدهٔ پایتون و تست‌های runtime پاورشل جدا گزارش شده‌اند؛ runtime پاورشل **اجرا نشده**.
+
 ## انجام‌نشده / تأییدنشده
 - اعتبارسنجی واقعی روی Windows 10/11 x64 هنوز انجام نشده؛ همهٔ آزمایش‌ها روی Linux بوده‌اند.
 - PDF فارسی، قفل وابستگی‌ها و pip-audit همچنان انجام نشده (طبق README).
-- R5 و R6 هنوز Merge نشده‌اند.
+- R5، R6 و R7 هنوز Merge نشده‌اند.
+- اسکریپت PowerShell هرگز اجرا نشده است (نه روی Windows و نه با pwsh).
 
 ## در انتظار
 - بررسی ChatGPT و تأیید کاربر برای ادامه (مرحلهٔ بعد در `NEXT.md`).
 
 ## تاریخچه
+- 2026-11-14: R7 — ایمن‌سازی مسیر خروجی اعتبارسنجی ویندوز (OutDir/venv موجود → توقف fail-closed).
 - 2026-11-14: R6 — fail-closed دقیق برای mode؛ ساخت `STATUS.md` و `NEXT.md`.

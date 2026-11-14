@@ -20,7 +20,13 @@
   Optional folder with pre-downloaded wheels. If given, pip runs with --no-index --find-links.
 
 .PARAMETER OutDir
-  Result folder (default: validation_results\<timestamp> under the repository).
+  Result folder (default: validation_results\<RunId> under the repository). It must NOT exist yet:
+  if it does, the script stops (exit code 2) before writing anything. It is created without the Force switch.
+
+.PARAMETER RunId
+  Name stamp used for the default OutDir and for the virtual environment folder
+  .venv-validate-<RunId> (default: UTC timestamp). If that venv folder already exists the script
+  stops (exit code 2); an existing venv is never reused, cleaned or deleted. Allowed: A-Z a-z 0-9 . _ -
 
 .PARAMETER Rounds
   Rounds of the concurrent-export check (default 5).
@@ -36,6 +42,7 @@ param(
     [string]$WorkDir = "",
     [string]$WheelDir = "",
     [string]$OutDir = "",
+    [string]$RunId = "",
     [int]$Rounds = 5,
     [int]$Procs = 6
 )
@@ -44,9 +51,23 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $RepoRoot
 
-$Stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+$Stamp = $RunId
+if (-not $Stamp) { $Stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ') }
+
+# ---- Pre-flight (fail closed): nothing has been written, deleted, replaced or reused at this point. ----
+function Stop-Refused([string]$Message) {
+    Write-Host ("REFUSED: " + $Message) -ForegroundColor Red
+    Write-Host "Nothing was written, deleted, replaced, renamed or reused. Use a new -OutDir / -RunId, or remove the old folder yourself." -ForegroundColor Red
+    exit 2
+}
+if ($Stamp -notmatch '^[A-Za-z0-9._-]{1,40}$') { Stop-Refused "invalid RunId '$Stamp' (allowed: A-Z a-z 0-9 . _ -, 1-40 chars)" }
 if (-not $OutDir) { $OutDir = Join-Path $RepoRoot ("validation_results\" + $Stamp) }
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$venvDir = Join-Path $RepoRoot ('.venv-validate-' + $Stamp)
+if (Test-Path -LiteralPath $OutDir) { Stop-Refused "OutDir already exists: $OutDir" }
+if (Test-Path -LiteralPath $venvDir) { Stop-Refused "virtual environment folder already exists (never reused): $venvDir" }
+# New-Item without the Force switch fails if the folder appeared in the meantime; that is also a refusal.
+try { [void](New-Item -ItemType Directory -Path $OutDir -ErrorAction Stop) }
+catch { Stop-Refused ("cannot create a NEW OutDir '" + $OutDir + "': " + $_.Exception.Message) }
 $OutDir = (Resolve-Path -LiteralPath $OutDir).Path
 
 $script:Steps = New-Object System.Collections.ArrayList
@@ -60,7 +81,10 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $env:PYTHONUTF8 = '1'
 $env:PIP_DISABLE_PIP_VERSION_CHECK = '1'
 
-function Write-Text([string]$Path, [string]$Text) {
+# Every file is created once inside the fresh OutDir. An existing file is never overwritten,
+# except results.json, which this same run rewrites as it progresses (-AllowRewrite).
+function Write-Text([string]$Path, [string]$Text, [switch]$AllowRewrite) {
+    if ((Test-Path -LiteralPath $Path) -and -not $AllowRewrite) { throw "Refusing to overwrite existing file: $Path" }
     [System.IO.File]::WriteAllText($Path, $Text, $Utf8NoBom)
 }
 
@@ -72,7 +96,7 @@ function Save-Results {
         pytest   = $script:Pytest
     }
     $json = ConvertTo-Json -InputObject $obj -Depth 8
-    Write-Text (Join-Path $OutDir 'results.json') $json
+    Write-Text (Join-Path $OutDir 'results.json') $json -AllowRewrite
 }
 
 function Add-Step([string]$Id, [string]$Title, [string]$Status, [string]$Detail, $ExitCode = $null, [string]$Command = '') {
@@ -101,6 +125,9 @@ function Format-Arg([string]$a) {
 function Invoke-Logged([string]$Exe, [string[]]$ArgList, [string]$LogName) {
     $out = Join-Path $OutDir ($LogName + '.stdout.txt')
     $err = Join-Path $OutDir ($LogName + '.stderr.txt')
+    foreach ($f in @($out, $err, (Join-Path $OutDir ($LogName + '.log')))) {
+        if (Test-Path -LiteralPath $f) { throw "Refusing to overwrite existing file: $f" }
+    }
     $display = (@($Exe) + $ArgList | ForEach-Object { Format-Arg $_ }) -join ' '
     Write-Host ("> " + $display) -ForegroundColor DarkGray
     $sp = @{
@@ -216,7 +243,10 @@ try {
     Add-Step 'env_python' $Titles.env_python 'PASS' ($script:Meta['python'] + ' at ' + $found.executable)
 
     # ---- 3. virtual environment ----------------------------------------------------------
-    $venvDir = Join-Path $RepoRoot ('.venv-validate-' + $Stamp)
+    # $venvDir was checked in the pre-flight. Create it as a NEW folder (no Force switch); venv then fills our empty folder.
+    try { [void](New-Item -ItemType Directory -Path $venvDir -ErrorAction Stop) }
+    catch { Stop-Run 'venv' $Titles.venv 'BLOCKED' ("cannot create a NEW venv folder (an existing one is never reused or deleted): " + $_.Exception.Message) }
+    $script:Meta['venv_dir'] = $venvDir
     $r = Invoke-Logged $script:SysPy @('-m', 'venv', $venvDir) 'venv'
     $script:VenvPy = Join-Path $venvDir 'Scripts\python.exe'
     if ($r.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $script:VenvPy)) {
@@ -278,7 +308,7 @@ try {
     # ---- 8. GUI import (no window) --------------------------------------------------------------
     $env:QT_QPA_PLATFORM = 'offscreen'
     $r = Invoke-Logged $script:VenvPy @($probeScript, 'guiimport') 'gui_import'
-    Remove-Item Env:\QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+    $env:QT_QPA_PLATFORM = $null
     $st = if ($r.ExitCode -eq 0) { 'PASS' } else { 'FAIL' }
     Add-Step 'gui_import' $Titles.gui_import $st (($r.Stdout).Trim() + $(if ($r.ExitCode -ne 0) { ' ' + (Get-Tail $r.Text 6) } else { '' })) $r.ExitCode
 

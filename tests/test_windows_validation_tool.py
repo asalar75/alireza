@@ -113,9 +113,8 @@ def test_ps1_has_no_overwrite_capable_operations_and_no_silent_skip():
     for bad in ("Move-Item", "Copy-Item", "-Force:$true", "os.replace", "os.rename", "shutil.move",
                 "SkipInstall", "-Skip", "ErrorAction SilentlyContinue -Force"):
         assert bad not in PS1, bad
-    # the only -Force is the creation of the output folder
-    assert [l.strip() for l in PS1.splitlines() if "-Force" in l] == [
-        "New-Item -ItemType Directory -Force -Path $OutDir | Out-Null"]
+    # R7: the Force switch is not used anywhere any more (OutDir and the venv folder are created as NEW folders)
+    assert [l.strip() for l in PS1.splitlines() if "-Force" in l] == []
 
 
 def test_ps1_requires_windows_python312_x64_and_stops_on_missing_dependency():

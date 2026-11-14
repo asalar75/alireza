@@ -28,11 +28,24 @@ Optional parameters
 ```powershell
 -WorkDir D:\scratch        # local folder for the temporary PDF tests (default %TEMP%)
 -WheelDir C:\wheels        # offline install: pip --no-index --find-links
--OutDir   C:\results\run1  # where results go (default validation_results\<UTC timestamp>)
+-OutDir   C:\results\run1  # where results go; must NOT exist yet (default validation_results\<RunId>)
+-RunId    mytest1          # name stamp for the default OutDir and .venv-validate-<RunId> (default: UTC timestamp)
 -Rounds 5 -Procs 6         # concurrent-export check: rounds x processes
 ```
-The script creates `.venv-validate-<timestamp>` inside the project folder (a new one each run; it
-never deletes anything). Delete old ones yourself when you no longer need them.
+The script creates `.venv-validate-<RunId>` inside the project folder (a new one each run).
+
+### Output safety (R7): earlier results are never touched
+* If `-OutDir` (or the default `validation_results\<RunId>`) **already exists**, the script stops at once
+  with `REFUSED: ...` and **exit code 2**, before writing anything.
+* If `.venv-validate-<RunId>` **already exists**, it stops the same way. An existing venv is never
+  reused, cleaned or deleted.
+* The two folders are created with `New-Item` without the Force switch, so a folder that appears in the
+  meantime is also a refusal. No file is ever deleted, truncated, replaced or renamed; every log and the
+  report are created once. The only file rewritten is this run's own `results.json` (progress file).
+* Consequence: running twice in the same second without `-RunId`/`-OutDir` is refused. Give each run a new
+  `-RunId`, or remove the old folders yourself.
+Exit codes: 0 = every automated step PASS; 1 = at least one step not PASS; 2 = refused (output path
+exists / invalid RunId); the report helper also exits 2 when its output file already exists.
 
 ## What it does (in order)
 | Step id | What | If it fails |
@@ -64,7 +77,6 @@ disk-full or permission errors.
 * `results.json` - the same data, machine readable.
 * `*.log`, `pytest-junit.xml`, `checks.json` - raw logs.
 
-Exit code: 0 only if every automated step is PASS; otherwise 1.
 
 ## After the automated run
 1. Do the manual GUI smoke test: `docs\WINDOWS_GUI_SMOKE_TEST.md` (the script never starts the GUI).

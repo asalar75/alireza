@@ -409,6 +409,20 @@ def build_report(results: dict) -> str:
     return "\n".join(L) + "\n"
 
 
+# --------------------------------------------------------------------------- safe output
+def write_new(path: Path, text: str) -> None:
+    """Create ``path`` exclusively. An existing file is never truncated or replaced
+    (FileExistsError); there is no overwrite fallback."""
+    with open(path, "x", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def _refuse_existing(path: Path) -> int:
+    print(f"REFUSED: {path} already exists. Nothing was written, deleted or replaced. "
+          "Choose a new output path.", file=sys.stderr)
+    return 2
+
+
 # --------------------------------------------------------------------------- probes
 def probe() -> dict:
     import struct
@@ -462,9 +476,14 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     if a.cmd == "checks":
+        if (a.out / "checks.json").exists():
+            return _refuse_existing(a.out / "checks.json")
         res = run_checks(a.work_dir, a.rounds, a.procs, a.allow_non_windows)
         a.out.mkdir(parents=True, exist_ok=True)
-        (a.out / "checks.json").write_text(json.dumps(res, indent=2), encoding="utf-8")
+        try:
+            write_new(a.out / "checks.json", json.dumps(res, indent=2))
+        except FileExistsError:
+            return _refuse_existing(a.out / "checks.json")
         for s in res["steps"]:
             print(f"[{s['status']}] {s['id']}: {s['detail']}")
         return 0 if all(s["status"] == "PASS" for s in res["steps"]) else 1
@@ -486,8 +505,13 @@ def main(argv=None) -> int:
         print(json.dumps(summarize_junit(a.xml)))
         return 0
     if a.cmd == "report":
+        if a.out.exists():
+            return _refuse_existing(a.out)
         results = json.loads(a.results.read_text(encoding="utf-8-sig"))
-        a.out.write_text(build_report(results), encoding="utf-8")
+        try:
+            write_new(a.out, build_report(results))
+        except FileExistsError:
+            return _refuse_existing(a.out)
         print(f"wrote {a.out}")
         return 0
     return 2
