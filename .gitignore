@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 *.db
 *.bak
+.venv*/
+validation_results/

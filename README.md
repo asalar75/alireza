@@ -43,6 +43,13 @@ python app.py
 python -m pytest -q
 ```
 
+## Windows validation (prepared, NOT yet executed on Windows)
+See `docs/WINDOWS_VALIDATION.md`. Run on Windows 10/11 x64 with CPython 3.12:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\validate_windows.ps1
+```
+Manual GUI checklist: `docs/WINDOWS_GUI_SMOKE_TEST.md`; report template: `docs/WINDOWS_VALIDATION_REPORT_TEMPLATE.md`.
+
 ## Build EXE
 ```powershell
 python -m pip install pyinstaller
