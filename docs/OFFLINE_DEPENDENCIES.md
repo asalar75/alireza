@@ -13,7 +13,7 @@ and copied in. **Nothing in this file has been downloaded or hash-checked yet.**
 | Extra PC prerequisite | Microsoft Visual C++ Redistributable 2015-2022 **x64** (needed by Qt/PySide6) |
 
 ## How to read the "Status" column
-* **verified version in sandbox** - that exact version is installed and was used to run the 178 tests on Linux. The Windows wheel *file name* is the expected pattern, not a downloaded file.
+* **verified version in sandbox** - that exact version is installed and was used to run the 188 tests on Linux. The Windows wheel *file name* is the expected pattern, not a downloaded file.
 * **CANDIDATE (unverified)** - my recommended pin, written from memory without network access. It may not exist or may not be the best choice. `pip download` fails loudly if a version does not exist; if so, pick the nearest version and update `tools/offline_manifest.json`. Do not trust a candidate until its hash is recorded.
 
 ## A. Persian font (put in `assets/fonts/`)

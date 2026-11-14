@@ -25,7 +25,8 @@ def export_pdf(path, project, findings, language="en", assets=None, *, allow_unv
                font_dir=None, shaper=None, generated_at=None, demo=False):
     """Write a PDF report atomically (unique temp file, then an atomic no-overwrite publish): a
     failure never leaves a broken or partial PDF, and an existing file is never replaced
-    (FileExistsError).
+    (FileExistsError). If the atomic no-overwrite step is unavailable it fails closed
+    (ExportPublishError) instead of falling back to a replace operation.
 
     language "en": always available.
     language "fa": needs Vazirmatn + arabic-reshaper + python-bidi (pre-flight, below) and is
@@ -60,27 +61,30 @@ def export_pdf(path, project, findings, language="en", assets=None, *, allow_unv
             pass
 
 
-def _publish_no_overwrite(tmp: Path, dest: Path) -> None:
-    """Make ``tmp`` appear as ``dest`` atomically, failing (FileExistsError) if dest exists.
+class ExportPublishError(ReportRenderingError):
+    """The finished PDF could not be published without risking an overwrite."""
 
-    A hard link is created atomically and fails if the name is taken, so a file that appears
-    between our check and this step is never replaced. If the filesystem has no hard links,
-    fall back to reserving the name with O_EXCL and then renaming over our own placeholder.
+
+def _publish_no_overwrite(tmp: Path, dest: Path) -> None:
+    """Make ``tmp`` appear as ``dest`` atomically, failing if ``dest`` exists (fail closed).
+
+    ``os.link`` creates the new name atomically and fails with FileExistsError if it is
+    taken, so a file that appears between our check and this step is never replaced.
+
+    There is deliberately NO fallback. Any overwrite-capable operation (``os.replace``,
+    ``os.rename`` on POSIX, reserve-then-replace) leaves a window in which another process's
+    file could be destroyed. If hard links are unsupported or fail for any other reason, this
+    raises ExportPublishError and leaves the destination untouched; the caller removes the
+    temporary file.
     """
     try:
         os.link(tmp, dest)
-        return
     except FileExistsError:
         raise
-    except OSError:
-        pass
-    fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY)  # FileExistsError if taken
-    os.close(fd)
-    try:
-        os.replace(tmp, dest)
-    except BaseException:
-        try:
-            dest.unlink()
-        except FileNotFoundError:
-            pass
-        raise
+    except OSError as exc:
+        raise ExportPublishError(
+            f"Cannot publish {dest} safely: the file system or folder does not allow the atomic "
+            f"no-overwrite step (hard link): {exc}. Nothing was written to the destination and any "
+            "existing file is untouched. Export to a folder on a local drive that supports hard "
+            "links (for example a local NTFS or ext4 volume), not a network share or cloud-synced "
+            "mount.") from exc

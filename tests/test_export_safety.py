@@ -2,6 +2,7 @@
 import errno
 import os
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -123,21 +124,43 @@ def test_two_exports_to_different_names_both_succeed(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.pdf", "b.pdf"]
 
 
-def test_fallback_when_hard_links_unsupported(tmp_path, monkeypatch):
+def _no_hardlinks(monkeypatch, exc=None):
+    exc = exc or OSError(errno.EPERM, "hard links unsupported")
+
     def nolink(*a, **k):
-        raise OSError(errno.EPERM, "hard links unsupported")
+        raise exc
     monkeypatch.setattr(os, "link", nolink)
+
+
+def test_hardlink_unsupported_fails_safely_and_creates_no_destination(tmp_path, monkeypatch):
+    _no_hardlinks(monkeypatch)
     out = tmp_path / "r.pdf"
-    export_pdf(out, PROJECT, [FINDING], "en")
-    assert out.read_bytes().startswith(b"%PDF") and [p.name for p in tmp_path.iterdir()] == ["r.pdf"]
-    before = out.read_bytes()
-    with pytest.raises(FileExistsError):
+    with pytest.raises(ex.ExportPublishError, match="hard link"):
         export_pdf(out, PROJECT, [FINDING], "en")
-    assert out.read_bytes() == before
+    assert not out.exists()
+    assert list(tmp_path.iterdir()) == []          # temp file removed too
 
 
-def test_fallback_race_keeps_foreign_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "link", lambda *a, **k: (_ for _ in ()).throw(OSError(errno.EPERM, "x")))
+@pytest.mark.parametrize("err", [errno.EPERM, errno.ENOTSUP, errno.EXDEV, errno.EACCES, errno.EMLINK])
+def test_any_non_exists_link_error_fails_closed(tmp_path, monkeypatch, err):
+    _no_hardlinks(monkeypatch, OSError(err, "link failed"))
+    with pytest.raises(ex.ExportPublishError) as ei:
+        export_pdf(tmp_path / "r.pdf", PROJECT, [FINDING], "en")
+    assert isinstance(ei.value.__cause__, OSError) and "untouched" in str(ei.value)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_hardlink_unsupported_preserves_existing_destination(tmp_path, monkeypatch):
+    out = tmp_path / "r.pdf"
+    out.write_bytes(b"MINE")
+    _no_hardlinks(monkeypatch)
+    with pytest.raises(FileExistsError):      # refused up front; link is never even attempted
+        export_pdf(out, PROJECT, [FINDING], "en")
+    assert out.read_bytes() == b"MINE" and [p.name for p in tmp_path.iterdir()] == ["r.pdf"]
+
+
+def test_hardlink_unsupported_and_foreign_file_appears_keeps_foreign_file(tmp_path, monkeypatch):
+    _no_hardlinks(monkeypatch)
     out = tmp_path / "r.pdf"
     real = ex.render_pdf
 
@@ -145,9 +168,94 @@ def test_fallback_race_keeps_foreign_file(tmp_path, monkeypatch):
         real(tmp, *a, **k)
         out.write_bytes(b"FOREIGN")
     monkeypatch.setattr(ex, "render_pdf", race)
-    with pytest.raises(FileExistsError):
+    with pytest.raises(ex.ExportPublishError):
         export_pdf(out, PROJECT, [FINDING], "en")
     assert out.read_bytes() == b"FOREIGN" and [p.name for p in tmp_path.iterdir()] == ["r.pdf"]
+
+
+def test_destination_created_by_another_process_during_render_is_untouched(tmp_path, monkeypatch):
+    """A genuinely separate OS process creates the destination while we are rendering."""
+    import subprocess
+    import sys
+    out = tmp_path / "r.pdf"
+    real = ex.render_pdf
+
+    def render_with_other_process(tmp, *a, **k):
+        real(tmp, *a, **k)
+        subprocess.run([sys.executable, "-I", "-c",
+                        "import sys; open(sys.argv[1],'wb').write(b'OTHER PROCESS DATA')", str(out)],
+                       check=True)
+    monkeypatch.setattr(ex, "render_pdf", render_with_other_process)
+    with pytest.raises(FileExistsError):
+        export_pdf(out, PROJECT, [FINDING], "en")
+    assert out.read_bytes() == b"OTHER PROCESS DATA"
+    assert [p.name for p in tmp_path.iterdir()] == ["r.pdf"]
+
+
+def test_overwrite_capable_calls_are_never_used_to_publish(tmp_path, monkeypatch):
+    """Regression: no os.replace / os.rename / shutil.move / Path.replace/rename/write on the
+    destination in any outcome (success, link failure, existing destination, render failure)."""
+    import shutil
+    calls = []
+
+    def forbid(name):
+        def f(*a, **k):
+            calls.append(name)
+            raise AssertionError(f"unsafe overwrite-capable call: {name}")
+        return f
+    monkeypatch.setattr(os, "replace", forbid("os.replace"))
+    monkeypatch.setattr(os, "rename", forbid("os.rename"))
+    monkeypatch.setattr(shutil, "move", forbid("shutil.move"))
+    monkeypatch.setattr(Path, "replace", forbid("Path.replace"))
+    monkeypatch.setattr(Path, "rename", forbid("Path.rename"))
+
+    ok = tmp_path / "ok.pdf"
+    export_pdf(ok, PROJECT, [FINDING], "en")                       # success path
+    assert ok.read_bytes().startswith(b"%PDF")
+    with pytest.raises(FileExistsError):                           # existing destination
+        export_pdf(ok, PROJECT, [FINDING], "en")
+    real_link = os.link
+    _no_hardlinks(monkeypatch)
+    with pytest.raises(ex.ExportPublishError):                     # link unsupported
+        export_pdf(tmp_path / "nolink.pdf", PROJECT, [FINDING], "en")
+    monkeypatch.setattr(os, "link", real_link)
+    monkeypatch.setattr(ex, "render_pdf", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    with pytest.raises(RuntimeError):                              # render failure
+        export_pdf(tmp_path / "fail.pdf", PROJECT, [FINDING], "en")
+    assert calls == []
+    assert [p.name for p in tmp_path.iterdir()] == ["ok.pdf"]
+
+
+def test_source_has_no_overwrite_capable_calls_in_publish_function():
+    import inspect
+    src = inspect.getsource(ex._publish_no_overwrite)
+    code = "\n".join(l for l in src.splitlines() if not l.strip().startswith(("#",)))
+    body = code.split('"""')[-1]            # drop the docstring
+    for bad in ("os.replace", "os.rename", ".replace(", ".rename(", "shutil", "O_EXCL"):
+        assert bad not in body, bad
+
+
+def test_concurrent_exports_to_different_destinations_both_succeed(tmp_path, monkeypatch):
+    real = ex.render_pdf
+    barrier = threading.Barrier(2, timeout=10)
+
+    def slow(tmp, *a, **k):
+        barrier.wait()           # both renders are in flight at the same moment
+        real(tmp, *a, **k)
+    monkeypatch.setattr(ex, "render_pdf", slow)
+    errors = []
+
+    def run(name):
+        try:
+            export_pdf(tmp_path / name, PROJECT, [FINDING], "en")
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+    ts = [threading.Thread(target=run, args=(n,)) for n in ("a.pdf", "b.pdf")]
+    [t.start() for t in ts]
+    [t.join(30) for t in ts]
+    assert errors == []
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.pdf", "b.pdf"]
+    assert all((tmp_path / n).read_bytes().startswith(b"%PDF") for n in ("a.pdf", "b.pdf"))
 
 
 def test_missing_destination_directory_gives_error_and_no_files(tmp_path):
