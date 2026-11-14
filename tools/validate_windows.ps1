@@ -148,7 +148,9 @@ try {
     Write-Host "Results:    $OutDir"
     $script:Meta['started_utc'] = (Get-Date).ToUniversalTime().ToString('o')
     $script:Meta['powershell'] = $PSVersionTable.PSVersion.ToString()
-    $script:Meta['mode'] = 'WINDOWS'
+    # Platform facts are recorded explicitly and only upgraded after the OS checks below succeed.
+    $script:Meta['is_windows'] = $false
+    $script:Meta['mode'] = 'UNCONFIRMED (platform not yet checked)'
 
     # commit information (git may be absent when the project came from a ZIP)
     $script:Meta['commit'] = 'unknown (git not available)'
@@ -164,6 +166,7 @@ try {
     # ---- 1. OS -------------------------------------------------------------------------
     $isWin = ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
     if (-not $isWin) {
+        $script:Meta['is_windows'] = $false
         $script:Meta['mode'] = 'NOT WINDOWS'
         Stop-Run 'env_os' $Titles.env_os 'BLOCKED' ("This is not Windows (" + [System.Environment]::OSVersion.VersionString + "). Run this script on Windows 10/11 x64.")
     }
@@ -181,6 +184,9 @@ try {
     if ($arch -ne 'AMD64' -or -not [System.Environment]::Is64BitOperatingSystem) {
         Stop-Run 'env_os' $Titles.env_os 'BLOCKED' ("Processor architecture is '$arch'; x64 (AMD64) is required.")
     }
+    # Windows 10/11 client, x64: confirmed. Only now may the run be reported as a Windows run.
+    $script:Meta['is_windows'] = $true
+    $script:Meta['mode'] = 'WINDOWS'
     Add-Step 'env_os' $Titles.env_os 'PASS' ($osInfo.Caption + ' ' + $osInfo.Version + ' ' + $arch)
 
     # ---- 2. Python ---------------------------------------------------------------------

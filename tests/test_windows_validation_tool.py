@@ -148,3 +148,95 @@ def test_docs_exist_and_define_the_four_statuses_and_gui_items():
         assert gid in gui and gid in tpl
     run = (ROOT / "docs" / "WINDOWS_VALIDATION.md").read_text(encoding="utf-8")
     assert "tools\\validate_windows.ps1" in run and "NOT executed on Windows" in run
+
+
+# ---- R5: platform detection (is_windows) ----------------------------------------------------
+def _meta_results(meta, status="PASS"):
+    return {"meta": meta, "steps": [{"id": sid, "title": wv.STEP_TITLES[sid], "status": status, "detail": "d"}
+                                    for sid in wv.STEP_ORDER], "commands": []}
+
+
+def test_is_windows_true_produces_a_windows_report():
+    md = wv.build_report(_meta_results({"is_windows": True, "mode": "WINDOWS"}))
+    assert "NOT A WINDOWS VALIDATION" not in md
+    assert "Automated Windows validation: **PASS**" in md
+
+
+def test_is_windows_false_produces_a_non_windows_report():
+    md = wv.build_report(_meta_results({"is_windows": False, "mode": "DRY-RUN (not Windows; not a validation)"}))
+    assert "NOT A WINDOWS VALIDATION" in md and "did not confirm a supported Windows 10/11 x64" in md
+    assert "Automated Windows validation: **PASS**" not in md
+
+
+def test_missing_is_windows_never_gives_a_windows_pass():
+    md = wv.build_report(_meta_results({"mode": "WINDOWS"}))          # field absent, all steps PASS
+    assert "NOT A WINDOWS VALIDATION" in md and "`is_windows` is missing" in md
+    assert "Automated Windows validation: **PASS**" not in md
+    assert "NOT PASSED" in md
+
+
+@pytest.mark.parametrize("value", [None, "true", "True", 1, 0, "", "yes", [], {}])
+def test_non_boolean_is_windows_values_are_not_treated_as_windows(value):
+    md = wv.build_report(_meta_results({"is_windows": value, "mode": "WINDOWS"}))
+    assert "Automated Windows validation: **PASS**" not in md and "NOT A WINDOWS VALIDATION" in md
+
+
+@pytest.mark.parametrize("mode", ["DRY-RUN (not Windows; not a validation)", "NOT WINDOWS",
+                                  "UNCONFIRMED (platform not yet checked)"])
+def test_inconsistent_mode_overrides_is_windows_true(mode):
+    md = wv.build_report(_meta_results({"is_windows": True, "mode": mode}))
+    assert "Automated Windows validation: **PASS**" not in md
+    assert "inconsistent with a Windows run" in md
+
+
+def test_blocked_windows_run_is_not_a_pass_even_with_is_windows_true():
+    res = _meta_results({"is_windows": True, "mode": "WINDOWS"})
+    res["steps"][3]["status"] = "BLOCKED"
+    assert "Automated Windows validation: **PASS**" not in wv.build_report(res)
+
+
+def test_automated_pass_does_not_imply_gui_persian_or_audit():
+    md = wv.build_report(_meta_results({"is_windows": True, "mode": "WINDOWS"}))
+    assert "says nothing about the manual GUI checklist, Persian PDF, dependency locking or pip-audit" in md
+    assert "Manual GUI smoke test: **NOT RUN**" in md
+    assert "Persian PDF: **NOT VALIDATED**" in md and "pip-audit: **NOT DONE**" in md
+    for gid, _ in wv.GUI_ITEMS:
+        assert re.search(rf"\| {gid} \|.*\*\*NOT RUN\*\*", md)
+
+
+def test_report_cli_reads_a_powershell_style_results_file_with_bom(tmp_path):
+    """results.json as written by PowerShell 5.1 can carry a UTF-8 BOM; is_windows must survive it."""
+    for flag, expect_banner in ((True, False), (False, True)):
+        res = _meta_results({"is_windows": flag, "mode": "WINDOWS" if flag else "NOT WINDOWS"})
+        src = tmp_path / f"results_{flag}.json"
+        src.write_bytes(b"\xef\xbb\xbf" + json.dumps(res).encode("utf-8"))
+        out = tmp_path / f"REPORT_{flag}.md"
+        assert wv.main(["report", str(src), "--out", str(out)]) == 0
+        assert ("NOT A WINDOWS VALIDATION" in out.read_text(encoding="utf-8")) is expect_banner
+
+
+def _pos(needle, start=0):
+    i = PS1.find(needle, start)
+    assert i >= 0, needle
+    return i
+
+
+def test_ps1_records_is_windows_only_after_the_windows_checks_succeed():
+    initial = _pos("$script:Meta['is_windows'] = $false")                 # explicit default
+    win32 = _pos("[System.PlatformID]::Win32NT")
+    blocked_false = _pos("$script:Meta['is_windows'] = $false", win32)      # explicit on non-Windows path
+    arch_check = _pos("x64 (AMD64) is required")
+    true_at = _pos("$script:Meta['is_windows'] = $true")
+    env_pass = _pos("Add-Step 'env_os' $Titles.env_os 'PASS'")
+    assert PS1.count("$script:Meta['is_windows'] = $true") == 1
+    assert initial < win32 < blocked_false < arch_check < true_at < env_pass
+    # mode becomes WINDOWS together with is_windows, never earlier
+    assert PS1.count("$script:Meta['mode'] = 'WINDOWS'") == 1
+    assert PS1.index("$script:Meta['mode'] = 'WINDOWS'") > arch_check
+    # nothing after the OS step may flip it back to true elsewhere
+    assert "is_windows'] = $true" not in PS1[env_pass + 10:]
+
+
+def test_ps1_metadata_matches_what_the_report_builder_reads():
+    src = (ROOT / "tools" / "windows_validation.py").read_text(encoding="utf-8")
+    assert 'meta.get("is_windows")' in src and "'is_windows'" in PS1

@@ -335,7 +335,11 @@ def build_report(results: dict) -> str:
     for sid, s in by_id.items():  # unknown extra steps
         if sid not in STEP_TITLES:
             steps.append(s)
-    is_win = bool(meta.get("is_windows"))
+    # Fail closed: only a literal JSON true counts. A missing/null/"true"/1 value, or a mode that
+    # says dry run / not Windows / unconfirmed, can never produce a Windows verdict.
+    mode = str(meta.get("mode", ""))
+    recorded = meta.get("is_windows")
+    is_win = (recorded is True) and not mode.upper().startswith(("DRY-RUN", "NOT WINDOWS", "UNCONFIRMED"))
     counts = {k: sum(1 for s in steps if s["status"] == k) for k in STATUSES}
     auto_pass = is_win and counts["PASS"] == len(steps)
     L = []
@@ -343,13 +347,21 @@ def build_report(results: dict) -> str:
     L.append(f"Generated: {_now()}  \nCommit: {meta.get('commit', 'unknown')}  \n"
              f"Script mode: **{meta.get('mode', 'unknown')}**\n")
     if not is_win:
-        L.append("> **NOT A WINDOWS VALIDATION.** This report was produced on a non-Windows "
-                 "platform (dry run). Nothing in it validates Windows or NTFS behaviour.\n")
+        if "is_windows" not in meta:
+            why = "the platform was not recorded (`is_windows` is missing)"
+        elif recorded is True:
+            why = f"the recorded mode is inconsistent with a Windows run ({mode!r})"
+        else:
+            why = "the run did not confirm a supported Windows 10/11 x64 platform (dry run or blocked)"
+        L.append("> **NOT A WINDOWS VALIDATION.** " + (why[0].upper() + why[1:]) + ". Nothing in this report "
+                 "validates Windows or NTFS behaviour.\n")
     L.append("## Verdict\n")
     L.append(f"* Automated steps: PASS {counts['PASS']} / FAIL {counts['FAIL']} / "
              f"BLOCKED {counts['BLOCKED']} / NOT RUN {counts['NOT RUN']} (of {len(steps)})")
     L.append("* Automated Windows validation: **" + ("PASS" if auto_pass else
              "NOT PASSED (see steps)") + "**")
+    L.append("* An automated PASS covers only the automated steps above; it says nothing about the manual "
+             "GUI checklist, Persian PDF, dependency locking or pip-audit.")
     L.append("* Manual GUI smoke test: **NOT RUN** until a person fills in "
              "`docs/WINDOWS_GUI_SMOKE_TEST.md` (this script never runs the GUI).")
     L.append("* Persian PDF: **NOT VALIDATED** (`PERSIAN_PDF_VALIDATED` is False; font and wheels pending).")
